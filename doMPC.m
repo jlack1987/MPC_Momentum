@@ -1,0 +1,80 @@
+function gait = doMPC(constants, dynamics, robot, gait)
+aRows = size(dynamics.A{1},1);
+aCols = size(dynamics.A{1},2);
+bRows = size(dynamics.B,1);
+bCols = size(dynamics.B,2);
+
+dynamics.PcomX = dynamics.P(1:aRows:end,1:aRows);
+dynamics.PcomU = dynamics.P(1:aRows:end,aRows+1:end);
+
+dynamics.VcomX = dynamics.P(2:aRows:end,1:aRows);
+dynamics.VcomU = dynamics.P(2:aRows:end,aRows+1:end);
+
+dynamics.PcopX = dynamics.P(3:aRows:end,1:aRows);
+dynamics.PcopU = dynamics.P(3:aRows:end,aRows+1:end);
+
+dynamics.LdotX = dynamics.P(4:aRows:end,1:aRows);
+dynamics.LdotU = dynamics.P(4:aRows:end,aRows+1:end);
+
+[H,f] = computeCost(dynamics,gait, constants);
+
+u0 = -H\f';
+
+Aeq = [];
+beq = [];
+A = [];
+b = [];
+
+%%% Final COM Position Constraint %%%
+AcomEndx = dynamics.PcomU(end,:);
+bcomEndx = gait.COPs{end}(1) - dynamics.PcomX(end,:)*dynamics.initialConditionX;
+AcomEndy = dynamics.PcomU(end,:);
+bcomEndy = gait.COPs{end}(2) - dynamics.PcomX(end,:)*dynamics.initialConditionY;
+AcomEnd = blkdiag(AcomEndx,AcomEndy);
+bcomEnd = [bcomEndx;bcomEndy];
+
+[Aeq,beq] = add_constraint(Aeq,beq,AcomEnd,bcomEnd);
+
+%%% Final COM Velocity Constraint %%%
+AcomVelEndx = dynamics.VcomU(end,:);
+bcomVelEndx = -dynamics.VcomX(end,:) * dynamics.initialConditionX;
+AcomVelEndy = dynamics.VcomU(end,:);
+bcomVelEndy = -dynamics.VcomX(end,:) * dynamics.initialConditionY;
+AcomVelEnd = blkdiag(AcomVelEndx,AcomVelEndy);
+bcomVelEnd = [bcomVelEndx;bcomVelEndy];
+
+%[Aeq,beq] = add_constraint(Aeq,beq,AcomVelEnd,bcomVelEnd);
+
+if(constants.runningInMatlab)
+options = optimset('Algorithm','interior-point-convex','Display','final','TolFun',1e-6,'TolX',1e-6,'MaxIter',1000);
+tic
+x = quadprog(H,f,[],[],Aeq,beq,[],[],u0,options);
+toc
+else
+options = optimset('Display','final','TolFun',1e-6,'TolX',1e-6,'MaxIter',1000);
+[x, OBJ, INFO, LAMBDA] = qp(u0,H,f',Aeq,beq);
+end
+
+ux = x(1:bCols*constants.N);
+uy = x(bCols*constants.N+1:end);
+
+px = ux(1:2:end);
+py = uy(1:2:end);
+Lddoty = ux(2:2:end);
+Lddotx = uy(2:2:end);
+
+gait.comX = [dynamics.initialConditionX(1);dynamics.PcomX * dynamics.initialConditionX + dynamics.PcomU * ux];
+gait.comY = [dynamics.initialConditionY(1);dynamics.PcomX * dynamics.initialConditionY + dynamics.PcomU * uy];
+gait.comZ = dynamics.z;
+gait.com = [gait.comX,gait.comY,gait.comZ];
+
+gait.copX = [dynamics.initialConditionX(3);dynamics.PcopX * dynamics.initialConditionX + dynamics.PcopU * ux];
+gait.copY = [dynamics.initialConditionY(3);dynamics.PcopX * dynamics.initialConditionY + dynamics.PcopU * uy];
+
+gait.LdotX = [dynamics.initialConditionX(4);dynamics.LdotX*dynamics.initialConditionX + dynamics.LdotU * ux];
+gait.LdotY = [dynamics.initialConditionY(4);dynamics.LdotX*dynamics.initialConditionY + dynamics.LdotU * uy];
+
+gait.cmpX = gait.copX + gait.LdotY./(constants.mass.*(dynamics.zddot + constants.gravity));
+gait.cmpY = gait.copY - gait.LdotX./(constants.mass.*(dynamics.zddot + constants.gravity));
+
+end
